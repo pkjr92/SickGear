@@ -32,9 +32,9 @@ class TransmithenetProvider(generic.TorrentProvider):
 
         self.url_base = 'https://transmithe.net/'
         self.urls = {'config_provider_home_uri': self.url_base,
-                     'login': self.url_base + 'index.php?page=login',
-                     'cache': self.url_base + 'index.php?page=torrents&options=0&active=1',
-                     'search': '&search=%s',
+                     'login': self.url_base + 'login.php',
+                     'cache': self.url_base + 'torrents.php?search_type=0',
+                     'search': '&searchtext=%s',
                      'get': self.url_base + '%s'}
 
         self.url = self.urls['config_provider_home_uri']
@@ -44,17 +44,20 @@ class TransmithenetProvider(generic.TorrentProvider):
 
     def _do_login(self):
 
-        logged_in = lambda: 'uid' in self.session.cookies and 'pass' in self.session.cookies
+        logged_in = lambda: 'session' in self.session.cookies
         if logged_in():
             return True
 
         if self._check_auth():
-            login_params = {'uid': self.username, 'pwd': self.password, 'remember_me': 'on', 'login': 'submit'}
+            login_params = {'username': self.username, 'password': self.password, 'keeplogged': 'on', 'login': 'submit'}
             response = helpers.getURL(self.urls['login'], post_data=login_params, session=self.session)
             if response and logged_in():
                 return True
 
-            logger.log(u'Failed to authenticate with %s, abort provider.' % self.name, logger.ERROR)
+            msg = u'Failed to authenticate with %s, abort provider'
+            if response and 'username or password was incorrect' in response:
+                msg = u'Invalid username or password for %s. Check settings'
+            logger.log(msg % self.name, logger.ERROR)
 
         return False
 
@@ -86,29 +89,31 @@ class TransmithenetProvider(generic.TorrentProvider):
                         raise generic.HaltParseException
 
                     with BS4Parser(html, features=['html5lib', 'permissive']) as soup:
-                        torrent_table = soup.find_all('table', 'lista')[-1]
-                        torrent_rows = [] if not torrent_table else torrent_table.find_all('tr')
+                        torrent_table = soup.find('table', attrs={'id': 'torrent_table'})
+                        torrent_rows = []
+                        if torrent_table:
+                            torrent_rows = torrent_table.find_all('tr')
 
                         if 2 > len(torrent_rows):
                             raise generic.HaltParseException
 
                         for tr in torrent_rows[1:]:
-                            if tr.find('td', class_='header'):
+                            if tr.find('td', class_='sign'):
                                 continue
-                            downlink = tr.find('a', href=rc['get'])
+                            downlink = tr.find('a', attrs={"title" : "Download Torrent"})
                             if None is downlink:
                                 continue
                             try:
-                                seeders, leechers = [int(x.get_text().strip()) for x in tr.find_all('a', href=rc['peers'])]
+                                seeders = int(tr.find_all('td')[8].get_text().strip())
+                                leechers = int(tr.find_all('td')[9].get_text().strip())
                                 if mode != 'Cache' and (seeders < self.minseed or leechers < self.minleech):
                                     continue
 
-                                info = tr.find('a', href=rc['info'])
-                                title = ('data-src' in info.attrs and info['data-src']) or\
-                                        ('title' in info.attrs and info['title']) or info.get_text().strip()
-
-                                download_url = self.urls['get'] % str(downlink['href']).lstrip('/')
+                                title = tr.find('a', attrs={"data-src" : True}).attrs['data-src']
+                                download_url = self.urls['get'] % str(downlink['href'])
+                                                                
                             except (AttributeError, TypeError):
+                                logger.log(u'There was an ERROR')
                                 continue
 
                             if title and download_url:
